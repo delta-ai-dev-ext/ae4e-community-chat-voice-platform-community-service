@@ -1,0 +1,8 @@
+DROP TABLE IF EXISTS processed_events;
+DROP TABLE IF EXISTS member_roles;
+DROP TABLE IF EXISTS roles;
+DROP TABLE IF EXISTS community_bans;
+DROP TABLE IF EXISTS memberships;
+DROP TABLE IF EXISTS invites;
+DROP TABLE IF EXISTS channels;
+DROP TABLE IF EXISTS communities;

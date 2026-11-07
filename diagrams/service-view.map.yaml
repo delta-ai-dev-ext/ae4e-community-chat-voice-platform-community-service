@@ -1,0 +1,223 @@
+schema_version: 2
+diagram_id: service-view
+mode: service
+orientation: LR
+scope: 'community_service service view: inbound callers, the scoped service, its owned
+  PostgreSQL database, and the Kafka topics it produces and consumes.'
+sources:
+- path: docs/architecture.md
+  sha256: 296acbbeac120536627507c551e452c9907e99c444ef8638b0821830d9c12565
+- path: docs/decisions/ADR-001-member-state-as-single-source-of-truth.md
+  sha256: 0eea38f2d4fe81c68c6066c8c4ce395273e7a1c25a50961d093b19ab2501a94a
+- path: docs/decisions/ADR-002-position-based-role-hierarchy.md
+  sha256: 3e7c173b2c95bdebad29189d648c34eb13cf5df9ab4c68e00a84c0083274d3e0
+- path: docs/openapi_spec.yaml
+  sha256: 734d3d5254fc7c300c24c53b5a1feed07f3264f12236cb66e3be4c8ea0e70341
+- path: docs/user_stories.md
+  sha256: 7974d1412b2a0ce285cc8dd184f0d27696256de460451e0048214824b11dc306
+entities:
+- id: client
+  label: Member client app
+  kind: annotation
+  role: inbound
+  row: 330
+  evidence:
+  - path: docs/architecture.md
+    quote: 'Client calls with `Authorization: Bearer <access_token>`'
+- id: moderation
+  label: moderation_service
+  kind: annotation
+  role: inbound
+  row: 400
+  evidence:
+  - path: docs/architecture.md
+    quote: Used by `moderation_service` before every moderator action (sanction issue/lift,
+      appeal review, automod configuration change, audit-log read).
+- id: voice
+  label: voice_service
+  kind: annotation
+  role: inbound
+  row: 470
+  evidence:
+  - path: docs/architecture.md
+    quote: Used by `voice_service` when a user asks to join a voice channel.
+- id: svc
+  name: community_service
+  label: Community service
+  kind: service
+  technology: kubernetes-pod
+  role: service
+  row: 260
+  evidence:
+  - path: docs/decisions/ADR-001-member-state-as-single-source-of-truth.md
+    quote: '`community_service` is the **authoritative owner of member state**.'
+  - path: docs/architecture.md
+    quote: Clean architectural specification for the communities/channels/invites/memberships/roles
+      & permissions service of the Community Chat & Voice Platform.
+- id: db
+  label: Community PostgreSQL
+  kind: database
+  technology: postgresql
+  role: outbound
+  row: 400
+  evidence:
+  - path: docs/architecture.md
+    quote: Schema is owned and defined here; migrations apply it.
+- id: kafka
+  name: Kafka
+  label: Kafka broker
+  kind: broker
+  technology: kafka
+  role: outbound
+  row: 10
+  evidence:
+  - path: docs/architecture.md
+    quote: Event Flows (Kafka)
+  - path: docs/architecture.md
+    quote: 'Topic produced/consumed: `community_events` (produce), `moderation_events`
+      (consume).'
+relationships:
+- id: r-client
+  source: client
+  target: svc
+  type: request
+  interaction:
+    channel: direct
+    purpose: public community API
+    protocol: HTTP
+    exchange_id: public-rest-api
+  evidence:
+  - path: docs/architecture.md
+    quote: 'Client calls with `Authorization: Bearer <access_token>`'
+  - path: docs/architecture.md
+    quote: Request Flows (synchronous HTTP)
+- id: r-moderation
+  source: moderation
+  target: svc
+  type: request
+  interaction:
+    channel: direct
+    purpose: authorization checks
+    protocol: REST
+    exchange_id: api-001-authorization-check
+  evidence:
+  - path: docs/architecture.md
+    quote: Used by `moderation_service` before every moderator action (sanction issue/lift,
+      appeal review, automod configuration change, audit-log read).
+  - path: docs/architecture.md
+    quote: '| Kind | REST |'
+- id: r-voice
+  source: voice
+  target: svc
+  type: request
+  interaction:
+    channel: direct
+    purpose: voice access checks
+    protocol: REST
+    exchange_id: api-002-voice-access-check
+  evidence:
+  - path: docs/architecture.md
+    quote: Used by `voice_service` when a user asks to join a voice channel.
+  - path: docs/architecture.md
+    quote: '| Kind | REST |'
+- id: r-db
+  source: svc
+  target: db
+  type: ownership
+  evidence:
+  - path: docs/architecture.md
+    quote: Schema is owned and defined here; migrations apply it.
+- id: r-prod
+  source: svc
+  target: kafka
+  type: event
+  direction: forward
+  interaction:
+    channel: messaging
+    purpose: member and channel state changes
+    protocol: Kafka
+  messaging:
+    role: producer
+    topic: community_events
+  evidence:
+  - path: docs/architecture.md
+    quote: Builds the mandatory event envelope and publishes `community_member_changed`
+      (EVT-002) and `community_channel_changed` (EVT-003) to `community_events`, partitioned
+      by `community_id`.
+  - path: docs/architecture.md
+    quote: Event Flows (Kafka)
+- id: r-cons
+  source: kafka
+  target: svc
+  type: event
+  direction: forward
+  interaction:
+    channel: messaging
+    purpose: sanction application
+    protocol: Kafka
+  messaging:
+    role: consumer
+    topic: moderation_events
+  evidence:
+  - path: docs/architecture.md
+    quote: Consumes `moderation_events` (`member_sanction_changed`, EVT-004), applies
+      member-state changes idempotently, and emits the matching EVT-002.
+  - path: docs/architecture.md
+    quote: Event Flows (Kafka)
+view:
+  entities:
+  - client
+  - moderation
+  - voice
+  - svc
+  - db
+  - kafka
+  groups: []
+  edges:
+  - id: e-client
+    source: client
+    target: svc
+    relationships:
+    - r-client
+    label: HTTP
+    flow: forward
+  - id: e-moderation
+    source: moderation
+    target: svc
+    relationships:
+    - r-moderation
+    label: REST
+    flow: forward
+  - id: e-voice
+    source: voice
+    target: svc
+    relationships:
+    - r-voice
+    label: REST
+    flow: forward
+  - id: e-db
+    source: svc
+    target: db
+    relationships:
+    - r-db
+    label: SQL
+    flow: forward
+  - id: e-prod
+    source: svc
+    target: kafka
+    relationships:
+    - r-prod
+    label: 'Producers
+
+      community_service:community_events'
+    flow: forward
+  - id: e-cons
+    source: kafka
+    target: svc
+    relationships:
+    - r-cons
+    label: 'Consumers
+
+      community_service:moderation_events'
+    flow: feedback
+  omitted: []

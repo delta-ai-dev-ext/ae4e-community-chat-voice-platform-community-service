@@ -1,0 +1,1498 @@
+openapi: "3.0.3"
+info:
+  title: Community Service API
+  version: "1.0.0"
+  description: >
+    Communities, channels, invites, memberships, roles & permissions for the
+    Community Chat & Voice Platform. This service is the authoritative source of
+    member state (active/removed, banned, muted, roles) and the authorization
+    oracle for peer services (`moderation_service` via API-001,
+    `voice_service` via API-002).
+servers:
+  - url: /
+
+tags:
+  - name: communities
+  - name: channels
+  - name: invites
+  - name: members
+  - name: roles
+  - name: internal
+  - name: probes
+
+paths:
+  /communities:
+    post:
+      operationId: createCommunity
+      summary: Create a community (creator becomes owner)
+      description: Creates the community plus a default `general` text channel and a default `General` voice channel (capacity 10). Emits a `community_channel_changed` event per default channel.
+      tags: [communities]
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCommunityRequest'
+      responses:
+        "201":
+          description: Community created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommunityDetail'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "422":
+          $ref: '#/components/responses/UnprocessableEntity'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /communities/mine:
+    get:
+      operationId: listMyCommunities
+      summary: List communities the caller belongs to
+      description: Returns only communities with an `active` membership; an empty list drives the client's "join or create" empty state.
+      tags: [communities]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        "200":
+          description: Communities of the caller
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommunityList'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /communities/{community_id}:
+    get:
+      operationId: getCommunity
+      summary: Load a community with channels and the caller's roles & effective permissions
+      tags: [communities]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CommunityId'
+      responses:
+        "200":
+          description: Community detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommunityDetail'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          description: Caller is not an active member
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: not_a_member
+                detail: You are not a member of this community.
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalError'
+    patch:
+      operationId: updateCommunity
+      summary: Update community name, description or icon URL
+      description: Requires the `manage_community` permission. Only provided fields change.
+      tags: [communities]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CommunityId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateCommunityRequest'
+      responses:
+        "200":
+          description: Updated community
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Community'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/MissingPermission'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "422":
+          $ref: '#/components/responses/UnprocessableEntity'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /communities/{community_id}/channels:
+    post:
+      operationId: createChannel
+      summary: Create a text or voice channel
+      description: Requires `manage_channels`. Voice channels carry a capacity of 1–10 (default 10). Emits `community_channel_changed` (created).
+      tags: [channels]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CommunityId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateChannelRequest'
+      responses:
+        "201":
+          description: Channel created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Channel'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/MissingPermission'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "409":
+          description: A channel with the same name exists in the community
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: channel_name_conflict
+                detail: A channel with this name already exists.
+        "422":
+          $ref: '#/components/responses/UnprocessableEntity'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /communities/{community_id}/channels/{channel_id}:
+    patch:
+      operationId: updateChannel
+      summary: Rename, reorder, or change the capacity of a channel
+      description: Requires `manage_channels`. Emits `community_channel_changed` (updated).
+      tags: [channels]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CommunityId'
+        - $ref: '#/components/parameters/ChannelId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateChannelRequest'
+      responses:
+        "200":
+          description: Updated channel
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Channel'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/MissingPermission'
+        "404":
+          description: Channel (or community) not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: channel_not_found
+                detail: Channel not found in this community.
+        "422":
+          $ref: '#/components/responses/UnprocessableEntity'
+        "500":
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: deleteChannel
+      summary: Delete a channel
+      description: Requires `manage_channels`. The last remaining channel of a community cannot be deleted. Emits `community_channel_changed` (deleted).
+      tags: [channels]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CommunityId'
+        - $ref: '#/components/parameters/ChannelId'
+      responses:
+        "204":
+          description: Channel deleted
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/MissingPermission'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "409":
+          description: The community must keep at least one channel
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: last_channel
+                detail: A community must keep at least one channel.
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /communities/{community_id}/invites:
+    post:
+      operationId: createInvite
+      summary: Create an invite code
+      description: Requires `create_invites`. Supports an optional expiry (seconds from creation) and an optional maximum number of uses. Accepts an `Idempotency-Key` header for client retries.
+      tags: [invites]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CommunityId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateInviteRequest'
+      responses:
+        "201":
+          description: Invite created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invite'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/MissingPermission'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "422":
+          $ref: '#/components/responses/UnprocessableEntity'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /communities/{community_id}/invites/{code}:
+    delete:
+      operationId: revokeInvite
+      summary: Revoke an invite code
+      description: Requires `create_invites`. Idempotent — revoking an already-revoked invite returns 204.
+      tags: [invites]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CommunityId'
+        - $ref: '#/components/parameters/InviteCode'
+      responses:
+        "204":
+          description: Invite revoked
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/MissingPermission'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /invites/{code}:
+    get:
+      operationId: previewInvite
+      summary: Preview an invite
+      description: Returns the target community preview and the invite's validity, including the reason when invalid.
+      tags: [invites]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/InviteCode'
+      responses:
+        "200":
+          description: Invite preview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvitePreview'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          description: Unknown invite code
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: invite_not_found
+                detail: This invite does not exist.
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /invites/{code}/accept:
+    post:
+      operationId: acceptInvite
+      summary: Accept an invite and join the community
+      description: Creates an `active` membership, or returns the existing membership when the caller is already a member (idempotent). Banned users cannot rejoin. Emits `community_member_changed` (joined) on first join.
+      tags: [invites]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/InviteCode'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        "201":
+          description: Joined the community
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Membership'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          description: Caller is banned from the community
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: banned
+                detail: You are banned from this community.
+        "404":
+          description: Unknown invite code
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: invite_not_found
+                detail: This invite does not exist.
+        "410":
+          description: Invite expired, exhausted, or revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: invite_expired
+                detail: This invite is no longer valid.
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /communities/{community_id}/leave:
+    post:
+      operationId: leaveCommunity
+      summary: Leave a community
+      description: Sets the caller's membership to `removed`. The owner cannot leave (owner transfer is out of scope). Emits `community_member_changed` (left).
+      tags: [members]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CommunityId'
+      responses:
+        "204":
+          description: Left the community
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          description: No active membership for the caller
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: membership_not_found
+                detail: You are not a member of this community.
+        "409":
+          description: The owner cannot leave
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: owner_cannot_leave
+                detail: Transfer ownership before leaving.
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /communities/{community_id}/members:
+    get:
+      operationId: listMembers
+      summary: List members with role ids and mute status
+      description: Requires an active membership. Returns only `active` members, paginated with `cursor`/`limit`.
+      tags: [members]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CommunityId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        "200":
+          description: Member list page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberList'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          description: Caller is not an active member
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: not_a_member
+                detail: You are not a member of this community.
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /communities/{community_id}/roles:
+    get:
+      operationId: listRoles
+      summary: List the community's roles
+      description: Requires an active membership. Roles are returned ordered by position.
+      tags: [roles]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CommunityId'
+      responses:
+        "200":
+          description: Roles
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoleList'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/NotAMember'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: createRole
+      summary: Create a role
+      description: Requires `manage_roles`.
+      tags: [roles]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CommunityId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRoleRequest'
+      responses:
+        "201":
+          description: Role created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Role'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/MissingPermission'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "409":
+          description: A role with the same name exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: role_name_conflict
+                detail: A role with this name already exists.
+        "422":
+          $ref: '#/components/responses/UnprocessableEntity'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /communities/{community_id}/roles/{role_id}:
+    patch:
+      operationId: updateRole
+      summary: Update a role's name, permissions, or position
+      description: Requires `manage_roles`. Emits `community_member_changed` (roles_changed) for members holding this role.
+      tags: [roles]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CommunityId'
+        - $ref: '#/components/parameters/RoleId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRoleRequest'
+      responses:
+        "200":
+          description: Updated role
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Role'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/MissingPermission'
+        "404":
+          description: Role (or community) not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: role_not_found
+                detail: Role not found in this community.
+        "422":
+          $ref: '#/components/responses/UnprocessableEntity'
+        "500":
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: deleteRole
+      summary: Delete a role
+      description: Requires `manage_roles`. Member assignments of the role are removed. Emits `community_member_changed` (roles_changed) for affected members.
+      tags: [roles]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CommunityId'
+        - $ref: '#/components/parameters/RoleId'
+      responses:
+        "204":
+          description: Role deleted
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/MissingPermission'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /communities/{community_id}/members/{user_id}/roles:
+    put:
+      operationId: setMemberRoles
+      summary: Replace a member's roles
+      description: Requires `manage_roles`. The actor's highest role must outrank the target's highest role; the owner outranks everyone. Emits `community_member_changed` (roles_changed).
+      tags: [roles, members]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CommunityId'
+        - $ref: '#/components/parameters/TargetUserId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetMemberRolesRequest'
+      responses:
+        "200":
+          description: Member with the new role set
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Member'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          description: Hierarchy violation or missing permission
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: target_outranks_actor
+                detail: You cannot modify a member who outranks you.
+        "404":
+          description: Member not found in this community
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: member_not_found
+                detail: Member not found in this community.
+        "422":
+          $ref: '#/components/responses/UnprocessableEntity'
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /internal/communities/{community_id}/authorization-checks:
+    post:
+      operationId: checkAuthorization
+      summary: "[Internal] Community authorization check (API-001)"
+      description: |
+        Served for `moderation_service`. Confirms the actor holds the required permission and,
+        when a target is given, that the actor outranks the target. Banned non-members are still
+        reported via `target.is_banned`. A denied check is NOT an error: it returns `200` with
+        `allowed: false` and a `denial_reason`. Authentication is the per-edge service token
+        (`Authorization: Bearer`), not a user access token.
+      tags: [internal]
+      security: [{ serviceToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CommunityId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthorizationCheckRequest'
+      responses:
+        "200":
+          description: Check result (allowed or denied)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthorizationCheckResponse'
+        "400":
+          description: Malformed body or unknown permission key
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Missing or invalid service token
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Community not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: community_not_found
+                detail: Community does not exist.
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /internal/communities/{community_id}/channels/{channel_id}/voice-access-checks:
+    post:
+      operationId: checkVoiceAccess
+      summary: "[Internal] Voice channel access check (API-002)"
+      description: |
+        Served for `voice_service`. Confirms active, non-banned membership and that the channel is
+        a voice channel; returns the channel capacity, the member's mute state (mute restricts
+        publishing, not joining) and the community's voice channels for alternative suggestions.
+        A denied access is NOT an error: it returns `200` with `allowed: false`.
+      tags: [internal]
+      security: [{ serviceToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CommunityId'
+        - $ref: '#/components/parameters/ChannelId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VoiceAccessCheckRequest'
+      responses:
+        "200":
+          description: Check result (allowed or denied)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VoiceAccessCheckResponse'
+        "400":
+          description: Malformed body
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Missing or invalid service token
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Community not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: community_not_found
+                detail: Community does not exist.
+        "500":
+          $ref: '#/components/responses/InternalError'
+
+  /healthz:
+    get:
+      operationId: getHealthz
+      summary: Liveness probe
+      tags: [probes]
+      security: []
+      responses:
+        "200":
+          description: Process is alive
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+
+  /readyz:
+    get:
+      operationId: getReadyz
+      summary: Readiness probe
+      description: Returns 200 only when PostgreSQL and Kafka connectivity are ready; 503 during shutdown or dependency failure.
+      tags: [probes]
+      security: []
+      responses:
+        "200":
+          description: Ready to serve traffic
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+        "503":
+          description: Not ready (dependencies unreachable or draining)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: not_ready
+                detail: Dependencies are not reachable.
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Short-lived access token issued by `identity_service`, verified locally against identity's public verification keys.
+    serviceToken:
+      type: http
+      scheme: bearer
+      description: Per-edge service token provisioned through deployment secrets; used only on `/internal/*` endpoints.
+
+  parameters:
+    CommunityId:
+      name: community_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ChannelId:
+      name: channel_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    RoleId:
+      name: role_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    TargetUserId:
+      name: user_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    InviteCode:
+      name: code
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 6
+        maxLength: 32
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Opaque cursor from a previous page's `next_cursor`.
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 50
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema:
+        type: string
+        maxLength: 255
+      description: Client-supplied key so a retried creation does not create a duplicate.
+
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: Stable machine-readable error code, snake_case.
+        detail:
+          type: string
+          description: Human-readable explanation.
+
+    HealthStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+
+    PermissionKey:
+      type: string
+      enum:
+        - manage_community
+        - manage_channels
+        - manage_roles
+        - create_invites
+        - mute_members
+        - kick_members
+        - ban_members
+        - manage_automod
+        - view_audit_log
+        - review_appeals
+
+    Community:
+      type: object
+      required: [id, name, description, icon_url, owner_user_id, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 500
+          nullable: true
+        icon_url:
+          type: string
+          nullable: true
+          description: URL reference to the community icon.
+        owner_user_id:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ChannelKind:
+      type: string
+      enum: [text, voice]
+
+    Channel:
+      type: object
+      required: [id, community_id, kind, name, position, capacity, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        community_id:
+          type: string
+          format: uuid
+        kind:
+          $ref: '#/components/schemas/ChannelKind'
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        position:
+          type: integer
+          minimum: 0
+        capacity:
+          type: integer
+          minimum: 1
+          maximum: 10
+          nullable: true
+          description: Voice channels only; null for text channels.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateCommunityRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 500
+
+    UpdateCommunityRequest:
+      type: object
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 500
+          nullable: true
+        icon_url:
+          type: string
+          nullable: true
+          description: Must be an http(s) URL when provided.
+
+    CommunityDetail:
+      type: object
+      required: [community, channels, caller]
+      properties:
+        community:
+          $ref: '#/components/schemas/Community'
+        channels:
+          type: array
+          items:
+            $ref: '#/components/schemas/Channel'
+        caller:
+          type: object
+          required: [is_member, is_owner, role_ids, permissions]
+          properties:
+            is_member:
+              type: boolean
+            is_owner:
+              type: boolean
+            role_ids:
+              type: array
+              items:
+                type: string
+                format: uuid
+            permissions:
+              type: array
+              items:
+                $ref: '#/components/schemas/PermissionKey'
+              uniqueItems: true
+
+    CommunityList:
+      type: object
+      required: [communities]
+      properties:
+        communities:
+          type: array
+          items:
+            $ref: '#/components/schemas/Community'
+        next_cursor:
+          type: string
+          nullable: true
+
+    CreateChannelRequest:
+      type: object
+      required: [name, kind]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        kind:
+          $ref: '#/components/schemas/ChannelKind'
+        capacity:
+          type: integer
+          minimum: 1
+          maximum: 10
+          description: Voice channels only. Default 10 when omitted.
+
+    UpdateChannelRequest:
+      type: object
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        position:
+          type: integer
+          minimum: 0
+        capacity:
+          type: integer
+          minimum: 1
+          maximum: 10
+          description: Voice channels only; rejected for text channels.
+
+    CreateInviteRequest:
+      type: object
+      properties:
+        expires_in_seconds:
+          type: integer
+          minimum: 60
+          maximum: 2592000
+          description: Invite validity window from creation; omit for a non-expiring invite.
+        max_uses:
+          type: integer
+          minimum: 1
+          description: Maximum accepted joins; omit for unlimited uses.
+
+    Invite:
+      type: object
+      required: [id, community_id, code, created_by, created_at, expires_at, max_uses, use_count]
+      properties:
+        id:
+          type: string
+          format: uuid
+        community_id:
+          type: string
+          format: uuid
+        code:
+          type: string
+        created_by:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        max_uses:
+          type: integer
+          nullable: true
+        use_count:
+          type: integer
+
+    InvitePreview:
+      type: object
+      required: [valid, community]
+      properties:
+        valid:
+          type: boolean
+        invalid_reason:
+          type: string
+          enum: [invite_expired, invite_exhausted, invite_revoked]
+          nullable: true
+          description: Set when valid is false.
+        community:
+          type: object
+          required: [id, name]
+          properties:
+            id:
+              type: string
+              format: uuid
+            name:
+              type: string
+            description:
+              type: string
+              nullable: true
+            icon_url:
+              type: string
+              nullable: true
+            member_count:
+              type: integer
+              description: Approximate count of active members.
+
+    Membership:
+      type: object
+      required: [community_id, user_id, status, is_banned, muted_until, role_ids, joined_at]
+      properties:
+        community_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [active, removed]
+        is_banned:
+          type: boolean
+        muted_until:
+          type: string
+          format: date-time
+          nullable: true
+        role_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        joined_at:
+          type: string
+          format: date-time
+
+    Member:
+      type: object
+      required: [user_id, status, is_banned, muted_until, role_ids, joined_at]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [active, removed]
+        is_banned:
+          type: boolean
+        muted_until:
+          type: string
+          format: date-time
+          nullable: true
+        role_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        joined_at:
+          type: string
+          format: date-time
+
+    MemberList:
+      type: object
+      required: [members]
+      properties:
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/Member'
+        next_cursor:
+          type: string
+          nullable: true
+
+    Role:
+      type: object
+      required: [id, community_id, name, permissions, position, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        community_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        permissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PermissionKey'
+          uniqueItems: true
+        position:
+          type: integer
+          minimum: 0
+          description: Lower position = higher rank; the owner outranks all roles implicitly.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    RoleList:
+      type: object
+      required: [roles]
+      properties:
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/Role'
+
+    CreateRoleRequest:
+      type: object
+      required: [name, permissions, position]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        permissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PermissionKey'
+          uniqueItems: true
+        position:
+          type: integer
+          minimum: 0
+
+    UpdateRoleRequest:
+      type: object
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        permissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PermissionKey'
+          uniqueItems: true
+        position:
+          type: integer
+          minimum: 0
+
+    SetMemberRolesRequest:
+      type: object
+      required: [role_ids]
+      properties:
+        role_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+          uniqueItems: true
+          description: Complete replacement set of the member's roles. An empty array clears all roles.
+
+    AuthorizationCheckRequest:
+      type: object
+      additionalProperties: false
+      required: [actor_user_id, permission]
+      properties:
+        actor_user_id:
+          type: string
+          format: uuid
+        permission:
+          $ref: '#/components/schemas/PermissionKey'
+        target_user_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Member the action applies to; null or omitted for non-targeted actions.
+
+    AuthorizationCheckResponse:
+      type: object
+      required:
+        - community_id
+        - actor_user_id
+        - permission
+        - allowed
+        - denial_reason
+        - actor_is_member
+        - actor_is_owner
+        - actor_permissions
+        - target
+      properties:
+        community_id:
+          type: string
+          format: uuid
+        actor_user_id:
+          type: string
+          format: uuid
+        permission:
+          $ref: '#/components/schemas/PermissionKey'
+        allowed:
+          type: boolean
+          description: True only when the actor is an active member, holds the permission, and (if a target is given) outranks the target.
+        denial_reason:
+          type: string
+          nullable: true
+          enum:
+            - actor_not_member
+            - missing_permission
+            - target_outranks_actor
+            - target_is_owner
+            - target_is_self
+            - null
+        actor_is_member:
+          type: boolean
+        actor_is_owner:
+          type: boolean
+        actor_permissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PermissionKey'
+          uniqueItems: true
+        target:
+          type: object
+          nullable: true
+          required: [user_id, is_member, is_banned, is_owner, outranked_by_actor, muted_until]
+          properties:
+            user_id:
+              type: string
+              format: uuid
+            is_member:
+              type: boolean
+            is_banned:
+              type: boolean
+            is_owner:
+              type: boolean
+            outranked_by_actor:
+              type: boolean
+            muted_until:
+              type: string
+              format: date-time
+              nullable: true
+
+    VoiceAccessCheckRequest:
+      type: object
+      additionalProperties: false
+      required: [user_id]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+
+    VoiceChannelSummary:
+      type: object
+      required: [channel_id, name, capacity]
+      properties:
+        channel_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        capacity:
+          type: integer
+          minimum: 1
+          maximum: 10
+
+    VoiceAccessCheckResponse:
+      type: object
+      required: [community_id, user_id, allowed, denial_reason, muted_until, voice_channels]
+      properties:
+        community_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        allowed:
+          type: boolean
+          description: True when the user is an active, non-banned member and the channel is a voice channel. Mute does not deny access; it restricts publishing.
+        denial_reason:
+          type: string
+          nullable: true
+          enum: [not_a_member, banned, channel_not_found, not_a_voice_channel, null]
+        channel:
+          allOf:
+            - $ref: '#/components/schemas/VoiceChannelSummary'
+          description: The requested voice channel; omitted when denial_reason is channel_not_found or not_a_voice_channel.
+        muted_until:
+          type: string
+          format: date-time
+          nullable: true
+          description: Non-null and in the future when the member is currently muted (listen-only).
+        voice_channels:
+          type: array
+          description: All voice channels of the community (including the requested one); empty when allowed is false.
+          items:
+            $ref: '#/components/schemas/VoiceChannelSummary'
+
+  responses:
+    BadRequest:
+      description: Request validation failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: invalid_request
+            detail: The request body could not be parsed.
+    Unauthorized:
+      description: Authentication required
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: unauthorized
+            detail: A valid access token is required.
+    MissingPermission:
+      description: Caller lacks the required permission
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: missing_permission
+            detail: You do not have permission to perform this action.
+    NotAMember:
+      description: Caller is not an active member
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: not_a_member
+            detail: You are not a member of this community.
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: community_not_found
+            detail: Community does not exist.
+    UnprocessableEntity:
+      description: Business rule violation
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: validation_failed
+            detail: One or more fields are invalid.
+    InternalError:
+      description: Unexpected server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: internal_error
+            detail: An unexpected error occurred.

@@ -1,0 +1,21 @@
+# Build output of `make build`, which writes ./bin/community_service. The rule is
+# rooted at the repository so only that artefact directory is ignored: a source
+# directory named `bin` anywhere else in the tree — in particular the `cmd/`
+# tree that holds the service entrypoint (cmd/server/main.go) — is never
+# discarded, and nothing else matching these names is dropped from the tree.
+/bin/
+/coverage.out
+
+# Go test binaries and coverage profiles written by the toolchain.
+*.test
+*.out
+
+# Local configuration and secrets; only the documented template is committed.
+.env
+.env.*
+!.env.example
+
+# Editor and OS state.
+.idea/
+.vscode/
+.DS_Store
