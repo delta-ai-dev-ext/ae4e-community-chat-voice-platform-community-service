@@ -1,1 +1,191 @@
-# ae4e-community-chat-voice-platform-community-service
+# community_service
+
+Owns the community model of the platform: communities, channels, invites,
+memberships (the single source of truth of member state), roles and the role
+hierarchy, plus the two internal authorization oracles that moderation_service
+and voice_service call.
+
+The service is the specification's implementation: `docs/user_stories.md`
+(US-001…US-019), `docs/openapi_spec.yaml`, `docs/architecture.md` and
+`docs/engineering_guide.md` are authoritative. Behaviour documented there is
+implemented here verbatim; the one place where the specification is silent is
+listed under [Documented gaps](#documented-gaps).
+
+## Responsibilities
+
+- Community lifecycle: create with the default `general` text channel and
+  `General` voice channel, read with the caller's roles and effective
+  permissions, partial update.
+- Channels: create, rename/reorder/re-cap, delete while keeping at least one
+  channel per community.
+- Invites: mint, preview, revoke, accept — expiry, exhaustion and revocation are
+  re-checked inside the accept transaction.
+- Memberships: leave, list, and the authoritative member state that
+  `moderation_service` consumes.
+- Roles and hierarchy: role configuration plus member role assignment with the
+  owner-supremacy and position-based rank rules of
+  [ADR-002](docs/decisions/ADR-002-position-based-role-hierarchy.md).
+- Internal oracles: API-001 (moderator action check) and API-002 (voice access
+  check). Both answer denials in band: `200` with `allowed: false` and a
+  `denial_reason`, never an error status.
+- Events: produces `community_member_changed` (EVT-002) and
+  `community_channel_changed` (EVT-003) on `community_events`; consumes
+  `member_sanction_changed` (EVT-004) from `moderation_events`.
+
+## Quick start
+
+```bash
+cp .env.example .env        # fill DATABASE_URL, KAFKA_BROKERS, IDENTITY_*, INTERNAL_SERVICE_TOKEN
+make run                    # applies migrations at startup, then listens on :8080
+make test                   # go test ./... -race -count=1 -parallel 4
+make cover                  # coverage profile + total
+make docker-build
+```
+
+Migrations are embedded in the binary and applied on startup
+(`internal/repository/migrations/`), so a fresh database needs no extra tooling.
+
+## Configuration
+
+| Variable | Required | Default | Purpose |
+| --- | --- | --- | --- |
+| `DATABASE_URL` | yes | – | PostgreSQL connection string |
+| `KAFKA_BROKERS` | yes | – | Comma-separated bootstrap brokers |
+| `KAFKA_SASL_MECHANISM` | no | – | `PLAIN`, `SCRAM-SHA-256`, `SCRAM-SHA-512` |
+| `KAFKA_SASL_USERNAME` / `KAFKA_SASL_PASSWORD` | with SASL | – | SASL credentials |
+| `KAFKA_TLS_ENABLED` | no | `false` | TLS to the brokers |
+| `KAFKA_CONSUMER_GROUP` | no | `community_service` | EVT-004 consumer group |
+| `IDENTITY_ISSUER` | yes | – | Expected `iss` of access tokens |
+| `IDENTITY_AUDIENCE` | yes | – | Expected `aud` |
+| `IDENTITY_JWKS_PATH` / `IDENTITY_JWKS` | one of | – | Identity verification keys (inline wins) |
+| `INTERNAL_SERVICE_TOKEN` | yes | – | Per-edge token of `/internal/*` |
+| `PORT` | no | `8080` | HTTP listener port |
+| `SHUTDOWN_TIMEOUT_SECONDS` | no | `20` | Drain budget on SIGTERM |
+| `LOG_LEVEL` | no | `info` | `debug`, `info`, `warn`, `error` |
+
+Configuration is validated at startup and every problem is reported at once.
+
+## HTTP surface
+
+Public routes require an `Authorization: Bearer <identity access token>`; tokens
+are verified locally against the identity JWKS (RS256/ES256 families, `iss`,
+`aud` and `exp` checked), so no call to identity_service sits on the request
+path.
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `POST` | `/communities` | 201, creator becomes owner + member |
+| `GET` | `/communities/mine` | Cursor paginated, newest first |
+| `GET` | `/communities/{community_id}` | Caller roles and effective permissions |
+| `PATCH` | `/communities/{community_id}` | `manage_community` |
+| `POST` | `/communities/{community_id}/channels` | `manage_channels` |
+| `PATCH` | `/communities/{community_id}/channels/{channel_id}` | `manage_channels` |
+| `DELETE` | `/communities/{community_id}/channels/{channel_id}` | 409 `last_channel` for the last channel |
+| `POST` | `/communities/{community_id}/invites` | `create_invites` |
+| `DELETE` | `/communities/{community_id}/invites/{code}` | Idempotent revoke |
+| `GET` | `/invites/{code}` | In-band validity of the invite |
+| `POST` | `/invites/{code}/accept` | 201; a re-accept is idempotent |
+| `POST` | `/communities/{community_id}/leave` | 409 `owner_cannot_leave` for the owner |
+| `GET` | `/communities/{community_id}/members` | Active members, cursor paginated |
+| `PUT` | `/communities/{community_id}/members/{user_id}/roles` | `manage_roles` + hierarchy |
+| `GET` | `/communities/{community_id}/roles` | Rank order |
+| `POST` | `/communities/{community_id}/roles` | `manage_roles` |
+| `PATCH` | `/communities/{community_id}/roles/{role_id}` | `manage_roles` |
+| `DELETE` | `/communities/{community_id}/roles/{role_id}` | `manage_roles` |
+| `POST` | `/internal/communities/{community_id}/authorization-checks` | API-001 |
+| `POST` | `/internal/communities/{community_id}/channels/{channel_id}/voice-access-checks` | API-002 |
+| `GET` | `/healthz` | Liveness only — never fails on a dependency |
+| `GET` | `/readyz` | 503 while draining or when PostgreSQL/Kafka is unreachable |
+| `GET` | `/metrics` | Prometheus exposition |
+
+Errors use the shared shape `{"error": "<code>", "detail": "<human message>"}`;
+`/internal/*` failures use `application/problem+json`. Every response carries
+`X-Trace-Id`, echoed from the inbound `traceparent`/`X-Trace-Id` or minted.
+
+## Permissions and hierarchy
+
+Ten permission keys: `manage_community`, `manage_channels`, `manage_roles`,
+`create_invites`, `kick_members`, `ban_members`, `mute_members`,
+`assign_roles`, `review_appeals`, `view_audit_log`.
+
+The owner implicitly holds all ten; ownership is never a role row. Other members
+hold the union of their roles' permissions. A lower `position` ranks higher, so a
+member acts only on members strictly below their highest role, never on
+themselves and never on the owner.
+
+## Events
+
+Every message carries the same nine-field envelope (`event_id`, `event_type`,
+`event_version`, `occurred_at`, `producer`, `trace_id`, `correlation_id`,
+`causation_id`, `schema_ref`); `trace_id` is never empty. Records are keyed by
+`community_id` (EVT-002/EVT-003) so per-community ordering holds, and
+`trace_id`/`event_type` are mirrored into the Kafka headers.
+
+- **EVT-002** is emitted after every membership change — `joined`, `left`,
+  `removed`, `banned`, `unbanned`, `muted`, `unmuted`, `roles_changed` — carrying
+  the committed `member_version`, `role_ids`, `is_banned` and `muted_until`.
+- **EVT-003** is emitted on channel `created`/`updated`/`deleted` with the new
+  `channel_version`.
+- **EVT-004** is consumed with a `processed_events` dedupe on `event_id` and an
+  optimistic `member_version` guard, so replays are no-ops and out-of-order
+  sanctions are dropped instead of resurrecting older state. The resulting
+  EVT-002 copies the origin's `trace_id`/`correlation_id` and sets
+  `causation_id` to the EVT-004 event id.
+
+Publishing happens after the state change commits, with exponential-back-off
+retries; a message that survives no attempt increments
+`kafka_publish_failures_total` instead of failing the already-committed request.
+Consumed events get a bounded retry budget and are then dead-lettered with a log
+line and `kafka_dead_letter_total`, so one poison message cannot stall a
+partition.
+
+## Layout
+
+```
+cmd/server            composition root: config, migrations, wiring, drain
+internal/config       environment loading and validation
+internal/models       domain types, permission set, typed errors, DTOs
+internal/repository   PostgreSQL ports and pgx implementation (all SQL)
+internal/service      domain logic: permissions, invite, membership, roles, oracles, EVT-004
+internal/handler      gin routes, middleware, JWT/JWKS verification
+internal/events       envelope, payloads, Kafka producer, EVT-004 consumer
+internal/obs          structured logger and Prometheus metrics
+tests/unit            domain unit tests (package `unit`)
+tests/integration     router/handler tests over mocks (package `integration`)
+tests/mocks           repository, publisher and clock doubles
+```
+
+## Documented gaps
+
+These are points where the specification is silent or where the schema does not
+model a documented request. They are implemented conservatively and called out
+here rather than silently invented:
+
+1. **`Idempotency-Key`.** The header is accepted on invite creation and accept,
+   validated and logged, but no idempotency store exists in the architecture's
+   schema, so it does not deduplicate retries. Invite accept is naturally
+   idempotent for an active member; invite creation is additive per request.
+2. **Ban of a user who never joined.** EVT-004 `ban` for a non-member records the
+   `community_bans` row, because the EVT-002 contract requires
+   `member_version >= 1`, which cannot exist without a membership row. No EVT-002
+   is emitted for that case.
+3. **`mute` / `unmute`.** They maintain `muted_until`; a mute that already
+   elapsed, a mute without an end time, and an unmute of a non-muted member are
+   recorded as processed but change nothing.
+4. **Version columns are event-only.** `channel_version` and `member_version` are
+   part of the EVT-002/EVT-003 contracts and are deliberately absent from the
+   HTTP responses, matching the `Channel`/`Membership` schemas in
+   `docs/openapi_spec.yaml`.
+5. **Kafka lag** is exported as the last observed per-claim lag on the consumed
+   topic (`kafka_consumer_lag{topic, consumer_group}`), measured while consuming,
+   not by a background poller.
+
+## Testing
+
+`make test` runs `go test ./... -race -count=1 -parallel 4`. Unit tests cover
+permissions, hierarchy, invite validity, EVT-004 mapping/dedupe and the envelope
+contract; integration tests drive the real router with the service token, access
+tokens and mocks of every repository port, asserting the documented status codes
+and error codes per route. The pgx SQL layer cannot be exercised without a
+PostgreSQL/Docker runtime, so coverage claims are scoped to the domain, handler,
+event and mock layers.
